@@ -14,29 +14,29 @@ Quorum eliminates write-amplification and database locking bottlenecks typical o
 
 ```mermaid
 graph TD
-    Client["Client Browser (with UUID Fingerprint)"] -->|HTTP / SPA Traffic| Nginx["Nginx Gateway / Ingress (:80)"]
+    Client["Client Browser (with UUID Fingerprint)"] -->|"HTTP / SPA Traffic"| Nginx["Nginx Gateway / Ingress (:80)"]
     
     subgraph Frontend Tier
-        Nginx -->|Static Assets (no-cache)| WebApp["Vanilla HTML5 / CSS / ES6+ Dashboard"]
+        Nginx -->|"Static Assets (no-cache)"| WebApp["Vanilla HTML5 / CSS / ES6+ Dashboard"]
     end
 
     subgraph API Tier
-        Nginx -->|Proxy /api/*, /healthz, /readyz| API["FastAPI Gateway (:8000)"]
+        Nginx -->|"Proxy /api/*, /healthz, /readyz"| API["FastAPI Gateway (:8000)"]
     end
 
     subgraph Real-Time & Queue Tier
-        API -->|1. Check & SADD Voter UID| RedisVoters[("Redis Voter Sets (quorum:poll:{id}:voters)")]
-        API -->|2. HINCRBY Offset| RedisTallies[("Redis Hash Tallies (quorum:poll:{id}:tallies)")]
-        API -->|3. RPUSH Stream Queue| RedisQueue[("Redis Queue (quorum:vote_stream)")]
-        API -.->|Read Baseline Counts| Postgres[("PostgreSQL 16 DB")]
-        API -.->|Read Live Offsets| RedisTallies
+        API -->|"1. Check & SADD Voter UID"| RedisVoters[("Redis Voter Sets (quorum:poll:{id}:voters)")]
+        API -->|"2. HINCRBY Offset"| RedisTallies[("Redis Hash Tallies (quorum:poll:{id}:tallies)")]
+        API -->|"3. RPUSH Stream Queue"| RedisQueue[("Redis Queue (quorum:vote_stream)")]
+        API -.->|"Read Baseline Counts"| Postgres[("PostgreSQL 16 DB")]
+        API -.->|"Read Live Offsets"| RedisTallies
     end
 
     subgraph Batch Persistence Tier
-        Worker["Asynchronous Python Worker"] -->|BLPOP / LPOP Batch| RedisQueue
-        Worker -->|Batch INSERT (ON CONFLICT DO NOTHING)| Postgres
-        Worker -->|Aggregated UPDATE vote_count| Postgres
-        Worker -->|HINCRBY -count Offset Sync| RedisTallies
+        Worker["Asynchronous Python Worker"] -->|"BLPOP / LPOP Batch"| RedisQueue
+        Worker -->|"Batch INSERT (ON CONFLICT DO NOTHING)"| Postgres
+        Worker -->|"Aggregated UPDATE vote_count"| Postgres
+        Worker -->|"HINCRBY -count Offset Sync"| RedisTallies
     end
 ```
 

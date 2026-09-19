@@ -1,11 +1,12 @@
 # Quorum
 
-> **High-throughput, event-driven voting and polling platform engineered for ultra-low latency write ingestion and resilient batch persistence.**
+> **High-throughput, event-driven voting and polling platform engineered for ultra-low latency write ingestion, resilient batch persistence, anti-bias concealment, and strict one-vote-per-UID enforcement.**
 
-Quorum solves the write-amplification and database locking bottlenecks typical of real-time polling platforms. Rather than writing each vote synchronously to disk, Quorum utilizes an asynchronous, event-driven architecture:
-1. The **FastAPI Gateway** validates vote requests in sub-milliseconds, atomically updates in-memory counters in **Redis**, and streams vote events into a Redis queue.
-2. A dedicated **Asynchronous Python Worker** consumes the stream in batches and executes atomic multi-row inserts and aggregated updates to **PostgreSQL**, minimizing database I/O and row-level locks.
-3. A sleek, reactive **Vanilla Dashboard** served via **Nginx** displays live tally updates, provides instant visual feedback, and includes liveness/readiness indicators.
+Quorum eliminates write-amplification and database locking bottlenecks typical of real-time polling platforms. Rather than writing each vote synchronously to disk, Quorum utilizes an asynchronous, event-driven architecture:
+1. **FastAPI Gateway**: Validates vote requests in sub-milliseconds, atomically updates in-memory counters in **Redis**, registers voter UIDs to enforce single-vote constraints, and streams vote events into a Redis queue.
+2. **Anti-Bias Privacy**: Poll statistics (percentages, counts, progress bars, and total tallies) remain concealed from voters until they cast their ballot, preventing voting bias.
+3. **Asynchronous Batch Worker**: Consumes the stream in batches and executes atomic multi-row inserts and aggregated updates to **PostgreSQL**, minimizing database I/O and row-level locks.
+4. **Sleek Vanilla Frontend**: Served via **Nginx** with client UUID fingerprinting, real-time live results polling, instant optimistic state unlocking, and cluster readiness probes.
 
 ---
 
@@ -13,10 +14,10 @@ Quorum solves the write-amplification and database locking bottlenecks typical o
 
 ```mermaid
 graph TD
-    Client["Client Browser"] -->|HTTP / SPA Traffic| Nginx["Nginx Gateway / Ingress (:80)"]
+    Client["Client Browser (with UUID Fingerprint)"] -->|HTTP / SPA Traffic| Nginx["Nginx Gateway / Ingress (:80)"]
     
     subgraph Frontend Tier
-        Nginx -->|Static Assets| WebApp["Vanilla HTML5 / CSS / ES6+ Dashboard"]
+        Nginx -->|Static Assets (no-cache)| WebApp["Vanilla HTML5 / CSS / ES6+ Dashboard"]
     end
 
     subgraph API Tier
@@ -24,15 +25,17 @@ graph TD
     end
 
     subgraph Real-Time & Queue Tier
-        API -->|1. HINCRBY Offset| RedisTallies[("Redis Hash Tallies (quorum:poll:{id}:tallies)")]
-        API -->|2. RPUSH Stream| RedisQueue[("Redis Queue (quorum:vote_stream)")]
+        API -->|1. Check & SADD Voter UID| RedisVoters[("Redis Voter Sets (quorum:poll:{id}:voters)")]
+        API -->|2. HINCRBY Offset| RedisTallies[("Redis Hash Tallies (quorum:poll:{id}:tallies)")]
+        API -->|3. RPUSH Stream Queue| RedisQueue[("Redis Queue (quorum:vote_stream)")]
         API -.->|Read Baseline Counts| Postgres[("PostgreSQL 16 DB")]
         API -.->|Read Live Offsets| RedisTallies
     end
 
     subgraph Batch Persistence Tier
         Worker["Asynchronous Python Worker"] -->|BLPOP / LPOP Batch| RedisQueue
-        Worker -->|Batch INSERT & UPDATE vote_count| Postgres
+        Worker -->|Batch INSERT (ON CONFLICT DO NOTHING)| Postgres
+        Worker -->|Aggregated UPDATE vote_count| Postgres
         Worker -->|HINCRBY -count Offset Sync| RedisTallies
     end
 ```
@@ -46,29 +49,31 @@ quorum/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── config.py
-│   │   ├── database.py
-│   │   ├── main.py
-│   │   ├── models.py
-│   │   └── schemas.py
+│   │   ├── config.py         # Pydantic Settings injection
+│   │   ├── database.py       # Engine, SessionLocal, Redis pool & dependencies
+│   │   ├── main.py           # FastAPI endpoints (/healthz, /readyz, /api/polls, /api/polls/{id}/vote)
+│   │   ├── models.py         # SQLAlchemy models (Poll, PollOption, Vote with unique constraints)
+│   │   └── schemas.py        # Pydantic validation & response schemas
 │   └── requirements.txt
 ├── worker/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── config.py
-│   │   └── worker.py
+│   │   ├── config.py         # Worker tunables (BATCH_SIZE=50, FLUSH_INTERVAL_SECONDS=2.0)
+│   │   └── worker.py         # Idempotent batch consumer with PostgreSQL persistence & signal handling
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── app.js
-│   │   ├── index.html
-│   │   └── styles.css
-│   └── nginx.conf
+│   │   ├── 50x.html          # Custom error page for cluster reconnects
+│   │   ├── app.js            # Vanilla ES6+ client with UUID fingerprinting, anti-bias UI, and live polling
+│   │   ├── index.html        # Semantic dark-themed interface with cache-busting
+│   │   └── styles.css        # Glassmorphic cyber theme with micro-animations
+│   └── nginx.conf            # Nginx config with dynamic Docker resolver, reverse proxy, gzip, and cache control
 ├── db/
-│   └── init.sql
-├── .env.example
-├── .gitignore
-└── README.md
+│   └── init.sql              # Idempotent DDL, indexes, unique constraints, and seed polls
+├── docker-compose.yml        # Multi-container local orchestration
+├── .env.example              # Environment variables template
+├── .gitignore                # Production ignore patterns
+└── README.md                 # Complete documentation with Mermaid diagram & API contract
 ```
 
 ---
@@ -96,11 +101,11 @@ quorum/
 * **Python 3.11+**
 * **PostgreSQL 14+** (running on port 5432)
 * **Redis 7+** (running on port 6379)
-* **Nginx** (optional for local dev; built-in static servers or Docker can also be used)
+* **Nginx** (or Docker Compose)
 
 ### 1. Database Initialization
 
-Execute the idempotent schema migration and seed data script against your PostgreSQL instance:
+Apply the idempotent schema migration and seed data script:
 
 ```bash
 # Create database (if needed)
@@ -123,15 +128,10 @@ cp .env.example .env
 Set up a virtual environment and launch the FastAPI server with Uvicorn:
 
 ```bash
-# Navigate to backend and create virtual environment
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Run FastAPI API Gateway with live reload
 cd ..
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -143,24 +143,29 @@ The API will be accessible at:
 
 ### 4. Asynchronous Worker Setup
 
-Open a separate terminal to run the vote persistence worker:
+Run the vote persistence worker in a separate terminal:
 
 ```bash
 cd worker
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install worker dependencies
 pip install -r requirements.txt
-
-# Run worker process
 cd ..
 python3 -m worker.app.worker
 ```
 
 ### 5. Frontend Dashboard
 
-#### Option A: Running with Nginx
+#### Option A: Running with Docker Compose (Recommended)
+
+Spin up the entire stack with a single command:
+
+```bash
+docker compose up -d
+```
+Open [http://localhost:8080](http://localhost:8080) in your browser.
+
+#### Option B: Running with Nginx
 
 Copy static files and configuration to your Nginx root:
 
@@ -170,119 +175,93 @@ sudo cp frontend/nginx.conf /etc/nginx/conf.d/quorum.conf
 sudo nginx -s reload
 ```
 
-#### Option B: Running with Static HTTP Server (Development)
-
-You can also preview the frontend directly via any static file server:
-
-```bash
-cd frontend/src
-python3 -m http.server 3000
-```
-Open [http://localhost:3000](http://localhost:3000) in your browser. (The client script automatically routes API calls to `http://localhost:8000` when served from alternate ports).
-
 ---
 
 ## API Contract & cURL Examples
 
-### 1. Liveness Probe
-Validates that the gateway process is running.
+### 1. Liveness Probe (`GET /healthz`)
+Validates process liveness.
 
 ```bash
 curl -i http://localhost:8000/healthz
 ```
-
-**Response (`200 OK`)**:
 ```json
-{
-  "status": "alive"
-}
+{"status": "alive"}
 ```
 
-### 2. Readiness Probe
-Verifies that downstream dependencies (PostgreSQL and Redis) are connected and ready to handle traffic.
+### 2. Readiness Probe (`GET /readyz`)
+Validates downstream PostgreSQL and Redis connectivity.
 
 ```bash
 curl -i http://localhost:8000/readyz
 ```
-
-**Response (`200 OK`)**:
 ```json
-{
-  "status": "ready",
-  "database": "connected",
-  "redis": "connected"
-}
+{"status": "ready", "database": "connected", "redis": "connected"}
 ```
 
-### 3. List All Polls
-Returns all active polls with their options, merging database counts with live Redis tally offsets.
+### 3. List All Polls (`GET /api/polls`)
+
+#### A. Pre-Vote State (Statistics Concealed)
+When queried with a voter UID who has not yet voted:
 
 ```bash
-curl -i http://localhost:8000/api/polls
+curl -s "http://localhost:8000/api/polls?voter_fingerprint=fresh-voter-001"
 ```
-
-**Response (`200 OK`)**:
 ```json
 [
   {
     "id": 1,
     "title": "What is your preferred container orchestration tool?",
     "description": "Cast your vote for the primary orchestration framework driving your modern infrastructure stack.",
-    "created_at": "2026-09-19T12:00:00Z",
+    "created_at": "2026-09-19T07:21:26.491925Z",
     "options": [
-      {
-        "id": 1,
-        "poll_id": 1,
-        "label": "Kubernetes",
-        "vote_count": 42,
-        "percentage": 52.5
-      },
-      {
-        "id": 2,
-        "poll_id": 1,
-        "label": "Docker Swarm",
-        "vote_count": 18,
-        "percentage": 22.5
-      },
-      {
-        "id": 3,
-        "poll_id": 1,
-        "label": "Nomad",
-        "vote_count": 15,
-        "percentage": 18.8
-      },
-      {
-        "id": 4,
-        "poll_id": 1,
-        "label": "Bare Metal",
-        "vote_count": 5,
-        "percentage": 6.2
-      }
+      {"id": 1, "poll_id": 1, "label": "Kubernetes", "vote_count": null, "percentage": null},
+      {"id": 2, "poll_id": 1, "label": "Docker Swarm", "vote_count": null, "percentage": null},
+      {"id": 3, "poll_id": 1, "label": "Nomad", "vote_count": null, "percentage": null},
+      {"id": 4, "poll_id": 1, "label": "Bare Metal", "vote_count": null, "percentage": null}
     ],
-    "total_votes": 80
+    "has_voted": false,
+    "user_voted_option_id": null,
+    "total_votes": null
   }
 ]
 ```
 
-### 4. Get Single Poll
-Retrieves detailed breakdown for a specific poll by ID.
+#### B. Post-Vote State (Statistics Revealed)
+When queried with a voter UID who has cast a ballot:
 
 ```bash
-curl -i http://localhost:8000/api/polls/1
+curl -s "http://localhost:8000/api/polls/1?voter_fingerprint=fresh-voter-001"
+```
+```json
+{
+  "id": 1,
+  "title": "What is your preferred container orchestration tool?",
+  "description": "Cast your vote for the primary orchestration framework driving your modern infrastructure stack.",
+  "created_at": "2026-09-19T07:21:26.491925Z",
+  "options": [
+    {"id": 1, "poll_id": 1, "label": "Kubernetes", "vote_count": 2, "percentage": 50.0},
+    {"id": 2, "poll_id": 1, "label": "Docker Swarm", "vote_count": 1, "percentage": 25.0},
+    {"id": 3, "poll_id": 1, "label": "Nomad", "vote_count": 1, "percentage": 25.0},
+    {"id": 4, "poll_id": 1, "label": "Bare Metal", "vote_count": 0, "percentage": 0.0}
+  ],
+  "has_voted": true,
+  "user_voted_option_id": 1,
+  "total_votes": 4
+}
 ```
 
-### 5. Submit a Vote
-Casts a vote for an option. The vote is immediately acknowledged (`202 Accepted`), Redis in-memory tally is atomically incremented, and the event is queued for background batch persistence.
+### 4. Cast a Vote (`POST /api/polls/{poll_id}/vote`)
 
+#### A. Initial Vote Submission (Success)
 ```bash
 curl -i -X POST http://localhost:8000/api/polls/1/vote \
   -H "Content-Type: application/json" \
   -d '{
     "option_id": 1,
-    "voter_fingerprint": "a3f8c9b2-0192-4f9a-b851-f7638d01ef4a"
+    "voter_fingerprint": "fresh-voter-001"
   }'
 ```
-
 **Response (`202 Accepted`)**:
 ```json
 {
@@ -292,12 +271,30 @@ curl -i -X POST http://localhost:8000/api/polls/1/vote \
 }
 ```
 
+#### B. Duplicate Submission (Rejection)
+Attempting to vote a second time or change the ballot with the same UID returns `HTTP 409 Conflict`:
+
+```bash
+curl -i -X POST http://localhost:8000/api/polls/1/vote \
+  -H "Content-Type: application/json" \
+  -d '{
+    "option_id": 2,
+    "voter_fingerprint": "fresh-voter-001"
+  }'
+```
+**Response (`409 Conflict`)**:
+```json
+{
+  "detail": "You have already cast a vote on this poll. Changing votes is not permitted."
+}
+```
+
 ---
 
 ## Production Containerization & Kubernetes Readiness
 
-This repository is structured for minimal distroless and multi-stage container builds:
-* **Decoupled codebases**: `backend/` and `worker/` maintain separate lightweight dependencies.
+* **Anti-Fraud Uniqueness**: Database enforces `uq_votes_poll_voter` on `votes(poll_id, voter_hash)`.
+* **Idempotent Batch Consumer**: Worker executes `INSERT INTO votes ... ON CONFLICT (poll_id, voter_hash) DO NOTHING RETURNING poll_id, option_id` to guarantee exactly-once persistence.
 * **Health Probes**: `/healthz` and `/readyz` map directly to Kubernetes `livenessProbe` and `readinessProbe`.
-* **Graceful Worker Shutdown**: The asynchronous worker intercepts `SIGTERM` and `SIGINT` to flush pending in-memory batches before exiting, preventing vote loss during Kubernetes rolling deployments or Pod terminations.
-* **Auditability**: Individual votes are preserved in the `votes` audit table with timestamp and voter hash for auditing and fraud analysis.
+* **Zero Vote Loss**: Asynchronous worker intercepts `SIGTERM` and `SIGINT` to flush pending in-memory buffers before shutdown during Kubernetes rolling updates.
+* **Zero Client Stale Cache**: Nginx sets strict `no-cache` policies for application bundles (`.css`, `.js`) and dynamic Docker DNS resolution.

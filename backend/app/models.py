@@ -100,4 +100,5 @@ class Vote(Base):
     __table_args__ = (
         Index("idx_votes_poll_id", "poll_id"),
         Index("idx_votes_created_at", "created_at"),
+        Index("uq_votes_poll_voter", "poll_id", "voter_hash", unique=True),
     )

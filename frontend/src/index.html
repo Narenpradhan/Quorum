@@ -11,7 +11,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   
-  <link rel="stylesheet" href="styles.css" />
+  <!-- Cache-Busted Styling -->
+  <link rel="stylesheet" href="styles.css?v=1.2" />
 </head>
 <body>
   <div class="container">
@@ -86,12 +87,20 @@
         <!-- Vote Action Footer -->
         <div class="action-footer">
           <div class="total-tally">
-            Total Ingested Votes: <strong id="total-vote-count">0</strong>
+            Total Ingested Votes: <strong id="total-vote-count">Hidden until voted</strong>
           </div>
-          <button id="btn-submit-vote" class="btn-vote" disabled>
-            <span id="btn-vote-text">Submit Vote</span>
-            <div class="spinner" id="vote-spinner" style="display: none;"></div>
-          </button>
+          <div class="vote-action-container">
+            <button id="btn-submit-vote" class="btn-vote" disabled>
+              <span id="btn-vote-text">Submit Vote</span>
+              <div class="spinner" id="vote-spinner" style="display: none;"></div>
+            </button>
+            <div id="vote-confirmed-badge" class="vote-confirmed-badge" style="display: none;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#10b981">
+                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+              </svg>
+              <span>Vote Recorded</span>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -100,6 +109,6 @@
     <div class="toast-container" id="toast-container" aria-live="polite"></div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=1.2"></script>
 </body>
 </html>

@@ -5,10 +5,9 @@
  */
 
 (() => {
-  // Configuration
-  const API_BASE = window.location.port === "80" || window.location.port === "" 
-    ? "" 
-    : (window.location.hostname === "localhost" && window.location.port !== "8000" ? "http://localhost:8000" : "");
+  // Configuration: use relative path when served behind Nginx (port 80, 8080, or standard HTTP)
+  const isDirectDev = window.location.protocol === "file:" || window.location.port === "3000" || window.location.port === "5173";
+  const API_BASE = isDirectDev ? "http://localhost:8000" : "";
   
   const POLL_INTERVAL_MS = 3000;
   const HEALTH_CHECK_INTERVAL_MS = 5000;
@@ -25,7 +24,7 @@
     isClusterReady: false,
   };
 
-  // DOM Elements
+  // DOM Elements Cache
   const elements = {
     voterFingerprint: document.getElementById("voter-fingerprint"),
     clusterStatusBadge: document.getElementById("cluster-status-badge"),
@@ -42,13 +41,14 @@
     btnSubmitVote: document.getElementById("btn-submit-vote"),
     btnVoteText: document.getElementById("btn-vote-text"),
     voteSpinner: document.getElementById("vote-spinner"),
+    voteConfirmedBadge: document.getElementById("vote-confirmed-badge"),
     toastContainer: document.getElementById("toast-container"),
   };
 
   // --- Utility Functions ---
 
   /**
-   * Generate or retrieve client UUID fingerprint from localStorage
+   * Generate or retrieve persistent client UUID fingerprint from localStorage
    */
   function initVoterFingerprint() {
     let voterId = localStorage.getItem("quorum_voter_uuid");
@@ -56,7 +56,7 @@
       if (window.crypto && window.crypto.randomUUID) {
         voterId = window.crypto.randomUUID();
       } else {
-        voterId = "voter-" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        voterId = "voter-" + Math.random().toString(36).substring(2, 12) + Math.random().toString(36).substring(2, 12);
       }
       localStorage.setItem("quorum_voter_uuid", voterId);
     }
@@ -215,13 +215,19 @@
       });
 
       if (response.status === 202) {
-        showToast("Vote Accepted! Results unlocked.", "success");
-        // Immediately fetch updated poll to reveal statistics
-        setTimeout(refreshActivePollTallies, 200);
+        showToast("Vote Recorded! Results unlocked.", "success");
+        // Optimistically mark as voted and unlock results
+        if (currentPoll) {
+          currentPoll.has_voted = true;
+          currentPoll.user_voted_option_id = state.selectedOptionId;
+          renderActivePoll(currentPoll, true);
+        }
+        // Sync full state from backend
+        await fetchPolls();
       } else if (response.status === 409) {
         const errorData = await response.json().catch(() => ({}));
         showToast(errorData.detail || "You have already cast a vote on this poll.", "error");
-        setTimeout(refreshActivePollTallies, 200);
+        await fetchPolls();
       } else {
         const errorData = await response.json().catch(() => ({}));
         showToast(errorData.detail || "Failed to submit vote.", "error");
@@ -254,7 +260,7 @@
       .map(poll => {
         const isActive = poll.id === state.activePollId;
         const badgeMarkup = poll.has_voted
-          ? `<span class="vote-badge poll-badge-voted">✓ Voted • ${poll.total_votes !== null ? poll.total_votes : ''} votes</span>`
+          ? `<span class="vote-badge poll-badge-voted">✓ Voted${poll.total_votes !== null ? ` • ${poll.total_votes}` : ''}</span>`
           : `<span class="vote-badge">${poll.options.length} options</span>`;
 
         return `
@@ -284,17 +290,24 @@
     elements.activePollTitle.textContent = poll.title;
     elements.activePollDesc.textContent = poll.description || "Cast your vote below.";
 
-    // Total votes: hidden before voting
-    if (poll.has_voted && poll.total_votes !== null) {
-      elements.totalVoteCount.textContent = poll.total_votes.toLocaleString();
+    const hasVoted = Boolean(poll.has_voted);
+    const votedOptionId = poll.user_voted_option_id;
+
+    // Total votes count: revealed only if voted
+    if (hasVoted && poll.total_votes !== null) {
+      elements.totalVoteCount.textContent = `${poll.total_votes.toLocaleString()} votes`;
     } else {
       elements.totalVoteCount.textContent = "Hidden until voted";
     }
 
-    const hasVoted = poll.has_voted;
-    const votedOptionId = poll.user_voted_option_id;
+    // Determine if full DOM rebuild is required
+    const isDomShowingHiddenStats = Boolean(elements.optionsContainer.querySelector(".stats-hidden-badge"));
+    const mustRebuild = fullRebuild ||
+      elements.optionsContainer.children.length === 0 ||
+      (hasVoted && isDomShowingHiddenStats) ||
+      (!hasVoted && !isDomShowingHiddenStats);
 
-    if (fullRebuild) {
+    if (mustRebuild) {
       elements.optionsContainer.innerHTML = poll.options
         .map(opt => {
           const isSelected = hasVoted ? (opt.id === votedOptionId) : (opt.id === state.selectedOptionId);
@@ -303,7 +316,7 @@
           let statsMarkup = "";
           let progressWidth = "0%";
 
-          if (hasVoted && opt.vote_count !== null && opt.percentage !== null) {
+          if (hasVoted && opt.percentage !== null && opt.vote_count !== null) {
             progressWidth = `${opt.percentage}%`;
             statsMarkup = `
               <div class="option-stats">
@@ -369,7 +382,7 @@
         });
       }
     } else {
-      // Smoothly update tallies if already voted, without rebuilding DOM elements
+      // Smoothly update numbers and progress bars without DOM rebuild
       if (hasVoted) {
         poll.options.forEach(opt => {
           const card = elements.optionsContainer.querySelector(`[data-option-id="${opt.id}"]`);
@@ -393,31 +406,19 @@
     if (!elements.btnSubmitVote) return;
 
     const currentPoll = state.polls.find(p => p.id === state.activePollId);
-    const hasVoted = currentPoll && currentPoll.has_voted;
+    const hasVoted = currentPoll && Boolean(currentPoll.has_voted);
 
     if (hasVoted) {
-      // Voted state: show confirmed badge
       elements.btnSubmitVote.style.display = "none";
-      let confirmedBadge = document.getElementById("vote-confirmed-badge");
-      if (!confirmedBadge) {
-        confirmedBadge = document.createElement("div");
-        confirmedBadge.id = "vote-confirmed-badge";
-        confirmedBadge.className = "vote-confirmed-badge";
-        confirmedBadge.innerHTML = `
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="#10b981">
-            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-          </svg>
-          Vote Recorded
-        `;
-        elements.btnSubmitVote.parentElement.appendChild(confirmedBadge);
+      if (elements.voteConfirmedBadge) {
+        elements.voteConfirmedBadge.style.display = "inline-flex";
       }
-      confirmedBadge.style.display = "inline-flex";
     } else {
-      // Unvoted state: show submit button
-      const confirmedBadge = document.getElementById("vote-confirmed-badge");
-      if (confirmedBadge) confirmedBadge.style.display = "none";
-
+      if (elements.voteConfirmedBadge) {
+        elements.voteConfirmedBadge.style.display = "none";
+      }
       elements.btnSubmitVote.style.display = "inline-flex";
+
       if (state.isSubmitting) {
         elements.btnSubmitVote.disabled = true;
         elements.btnVoteText.textContent = "Ingesting...";

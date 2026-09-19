@@ -29,8 +29,8 @@ class PollOptionResponse(BaseModel):
     id: int
     poll_id: int
     label: str
-    vote_count: int = Field(..., description="Effective real-time vote count")
-    percentage: float = Field(0.0, description="Percentage of total votes")
+    vote_count: Optional[int] = Field(None, description="Effective real-time vote count (revealed after voting)")
+    percentage: Optional[float] = Field(None, description="Percentage of total votes (revealed after voting)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -43,7 +43,9 @@ class PollResponse(BaseModel):
     description: Optional[str] = None
     created_at: datetime
     options: List[PollOptionResponse]
-    total_votes: int = Field(0, description="Sum of votes across all options")
+    has_voted: bool = Field(False, description="Whether the requesting voter has cast a ballot on this poll")
+    user_voted_option_id: Optional[int] = Field(None, description="The option ID selected by the voter, if voted")
+    total_votes: Optional[int] = Field(None, description="Sum of votes across all options (revealed after voting)")
 
     model_config = ConfigDict(from_attributes=True)
 

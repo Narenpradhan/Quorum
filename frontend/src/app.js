@@ -1,6 +1,7 @@
 /**
  * Quorum Client Application
  * Modern Vanilla ES6+ Event-Driven Voting Dashboard
+ * Enforces one-vote-per-UID and conceals voting statistics until a ballot is cast.
  */
 
 (() => {
@@ -135,11 +136,12 @@
   }
 
   /**
-   * Fetch all active polls
+   * Fetch all active polls with voter fingerprint to check vote status
    */
   async function fetchPolls() {
     try {
-      const res = await fetch(`${API_BASE}/api/polls`);
+      const url = `${API_BASE}/api/polls?voter_fingerprint=${encodeURIComponent(state.voterId)}`;
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const polls = await res.json();
       state.polls = polls;
@@ -167,7 +169,8 @@
   async function refreshActivePollTallies() {
     if (!state.activePollId) return;
     try {
-      const res = await fetch(`${API_BASE}/api/polls/${state.activePollId}`);
+      const url = `${API_BASE}/api/polls/${state.activePollId}?voter_fingerprint=${encodeURIComponent(state.voterId)}`;
+      const res = await fetch(url);
       if (!res.ok) return;
       const poll = await res.json();
       
@@ -190,6 +193,12 @@
       return;
     }
 
+    const currentPoll = state.polls.find(p => p.id === state.activePollId);
+    if (currentPoll && currentPoll.has_voted) {
+      showToast("You have already voted on this poll.", "error");
+      return;
+    }
+
     state.isSubmitting = true;
     updateVoteButtonState();
 
@@ -206,9 +215,13 @@
       });
 
       if (response.status === 202) {
-        showToast("Vote Accepted! Ingested into Redis stream for batch persistence.", "success");
-        // Trigger rapid refresh to pick up Redis tally offset
-        setTimeout(refreshActivePollTallies, 250);
+        showToast("Vote Accepted! Results unlocked.", "success");
+        // Immediately fetch updated poll to reveal statistics
+        setTimeout(refreshActivePollTallies, 200);
+      } else if (response.status === 409) {
+        const errorData = await response.json().catch(() => ({}));
+        showToast(errorData.detail || "You have already cast a vote on this poll.", "error");
+        setTimeout(refreshActivePollTallies, 200);
       } else {
         const errorData = await response.json().catch(() => ({}));
         showToast(errorData.detail || "Failed to submit vote.", "error");
@@ -225,9 +238,9 @@
 
   function selectPoll(pollId) {
     state.activePollId = pollId;
-    state.selectedOptionId = null;
     const poll = state.polls.find(p => p.id === pollId);
     if (poll) {
+      state.selectedOptionId = poll.has_voted ? poll.user_voted_option_id : null;
       renderActivePoll(poll, true);
       renderPollSidebar();
     }
@@ -238,15 +251,22 @@
     elements.activePollCount.textContent = `${state.polls.length} Available`;
 
     elements.pollListContainer.innerHTML = state.polls
-      .map(poll => `
-        <li class="poll-item-card ${poll.id === state.activePollId ? 'active' : ''}" data-poll-id="${poll.id}">
-          <div class="poll-item-title">${escapeHtml(poll.title)}</div>
-          <div class="poll-item-meta">
-            <span>${poll.options.length} choices</span>
-            <span class="vote-badge">${poll.total_votes} votes</span>
-          </div>
-        </li>
-      `)
+      .map(poll => {
+        const isActive = poll.id === state.activePollId;
+        const badgeMarkup = poll.has_voted
+          ? `<span class="vote-badge poll-badge-voted">✓ Voted • ${poll.total_votes !== null ? poll.total_votes : ''} votes</span>`
+          : `<span class="vote-badge">${poll.options.length} options</span>`;
+
+        return `
+          <li class="poll-item-card ${isActive ? 'active' : ''}" data-poll-id="${poll.id}">
+            <div class="poll-item-title">${escapeHtml(poll.title)}</div>
+            <div class="poll-item-meta">
+              <span>${poll.has_voted ? 'Results unlocked' : 'Vote to reveal'}</span>
+              ${badgeMarkup}
+            </div>
+          </li>
+        `;
+      })
       .join("");
 
     // Attach click handlers
@@ -263,57 +283,107 @@
 
     elements.activePollTitle.textContent = poll.title;
     elements.activePollDesc.textContent = poll.description || "Cast your vote below.";
-    elements.totalVoteCount.textContent = poll.total_votes.toLocaleString();
+
+    // Total votes: hidden before voting
+    if (poll.has_voted && poll.total_votes !== null) {
+      elements.totalVoteCount.textContent = poll.total_votes.toLocaleString();
+    } else {
+      elements.totalVoteCount.textContent = "Hidden until voted";
+    }
+
+    const hasVoted = poll.has_voted;
+    const votedOptionId = poll.user_voted_option_id;
 
     if (fullRebuild) {
       elements.optionsContainer.innerHTML = poll.options
-        .map(opt => `
-          <div class="option-card ${opt.id === state.selectedOptionId ? 'selected' : ''}" data-option-id="${opt.id}">
-            <div class="option-progress-bg" style="width: ${opt.percentage}%;"></div>
-            <div class="option-content">
-              <div class="option-left">
-                <div class="radio-indicator">
-                  <div class="radio-dot"></div>
-                </div>
-                <span class="option-label">${escapeHtml(opt.label)}</span>
-              </div>
+        .map(opt => {
+          const isSelected = hasVoted ? (opt.id === votedOptionId) : (opt.id === state.selectedOptionId);
+          const isUserChoice = hasVoted && (opt.id === votedOptionId);
+
+          let statsMarkup = "";
+          let progressWidth = "0%";
+
+          if (hasVoted && opt.vote_count !== null && opt.percentage !== null) {
+            progressWidth = `${opt.percentage}%`;
+            statsMarkup = `
               <div class="option-stats">
                 <span class="option-percentage">${opt.percentage}%</span>
                 <span class="option-votes">${opt.vote_count.toLocaleString()} votes</span>
               </div>
+            `;
+          } else {
+            // Conceal statistics prior to voting
+            statsMarkup = `
+              <div class="option-stats hidden-stats">
+                <span class="stats-hidden-badge">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
+                  </svg>
+                  Vote to unlock
+                </span>
+              </div>
+            `;
+          }
+
+          const cardClasses = [
+            "option-card",
+            isSelected ? "selected" : "",
+            isUserChoice ? "user-choice" : "",
+            hasVoted ? "locked-selection" : "",
+          ].filter(Boolean).join(" ");
+
+          const userTag = isUserChoice ? `<span class="user-vote-tag">Your Vote</span>` : "";
+
+          return `
+            <div class="${cardClasses}" data-option-id="${opt.id}">
+              <div class="option-progress-bg" style="width: ${progressWidth};"></div>
+              <div class="option-content">
+                <div class="option-left">
+                  <div class="radio-indicator">
+                    <div class="radio-dot"></div>
+                  </div>
+                  <span class="option-label">${escapeHtml(opt.label)}</span>
+                  ${userTag}
+                </div>
+                ${statsMarkup}
+              </div>
             </div>
-          </div>
-        `)
+          `;
+        })
         .join("");
 
-      // Attach click events
-      elements.optionsContainer.querySelectorAll(".option-card").forEach(card => {
-        card.addEventListener("click", () => {
-          const optId = parseInt(card.getAttribute("data-option-id"), 10);
-          state.selectedOptionId = optId;
+      // Attach click events only if user has not yet voted
+      if (!hasVoted) {
+        elements.optionsContainer.querySelectorAll(".option-card").forEach(card => {
+          card.addEventListener("click", () => {
+            const optId = parseInt(card.getAttribute("data-option-id"), 10);
+            state.selectedOptionId = optId;
 
-          // Update selection visual
-          elements.optionsContainer.querySelectorAll(".option-card").forEach(c => {
-            c.classList.toggle("selected", parseInt(c.getAttribute("data-option-id"), 10) === optId);
+            // Update selection visual
+            elements.optionsContainer.querySelectorAll(".option-card").forEach(c => {
+              c.classList.toggle("selected", parseInt(c.getAttribute("data-option-id"), 10) === optId);
+            });
+
+            updateVoteButtonState();
           });
-
-          updateVoteButtonState();
         });
-      });
+      }
     } else {
-      // Smoothly update tallies without rebuilding DOM elements
-      poll.options.forEach(opt => {
-        const card = elements.optionsContainer.querySelector(`[data-option-id="${opt.id}"]`);
-        if (card) {
-          const progressBg = card.querySelector(".option-progress-bg");
-          const percentageSpan = card.querySelector(".option-percentage");
-          const votesSpan = card.querySelector(".option-votes");
+      // Smoothly update tallies if already voted, without rebuilding DOM elements
+      if (hasVoted) {
+        poll.options.forEach(opt => {
+          const card = elements.optionsContainer.querySelector(`[data-option-id="${opt.id}"]`);
+          if (card) {
+            const progressBg = card.querySelector(".option-progress-bg");
+            const percentageSpan = card.querySelector(".option-percentage");
+            const votesSpan = card.querySelector(".option-votes");
 
-          if (progressBg) progressBg.style.width = `${opt.percentage}%`;
-          if (percentageSpan) percentageSpan.textContent = `${opt.percentage}%`;
-          if (votesSpan) votesSpan.textContent = `${opt.vote_count.toLocaleString()} votes`;
-        }
-      });
+            if (progressBg && opt.percentage !== null) progressBg.style.width = `${opt.percentage}%`;
+            if (percentageSpan && opt.percentage !== null) percentageSpan.textContent = `${opt.percentage}%`;
+            if (votesSpan && opt.vote_count !== null) votesSpan.textContent = `${opt.vote_count.toLocaleString()} votes`;
+          }
+        });
+      }
     }
 
     updateVoteButtonState();
@@ -322,14 +392,41 @@
   function updateVoteButtonState() {
     if (!elements.btnSubmitVote) return;
 
-    if (state.isSubmitting) {
-      elements.btnSubmitVote.disabled = true;
-      elements.btnVoteText.textContent = "Ingesting...";
-      elements.voteSpinner.style.display = "inline-block";
+    const currentPoll = state.polls.find(p => p.id === state.activePollId);
+    const hasVoted = currentPoll && currentPoll.has_voted;
+
+    if (hasVoted) {
+      // Voted state: show confirmed badge
+      elements.btnSubmitVote.style.display = "none";
+      let confirmedBadge = document.getElementById("vote-confirmed-badge");
+      if (!confirmedBadge) {
+        confirmedBadge = document.createElement("div");
+        confirmedBadge.id = "vote-confirmed-badge";
+        confirmedBadge.className = "vote-confirmed-badge";
+        confirmedBadge.innerHTML = `
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="#10b981">
+            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+          </svg>
+          Vote Recorded
+        `;
+        elements.btnSubmitVote.parentElement.appendChild(confirmedBadge);
+      }
+      confirmedBadge.style.display = "inline-flex";
     } else {
-      elements.btnSubmitVote.disabled = !state.selectedOptionId;
-      elements.btnVoteText.textContent = "Submit Vote";
-      elements.voteSpinner.style.display = "none";
+      // Unvoted state: show submit button
+      const confirmedBadge = document.getElementById("vote-confirmed-badge");
+      if (confirmedBadge) confirmedBadge.style.display = "none";
+
+      elements.btnSubmitVote.style.display = "inline-flex";
+      if (state.isSubmitting) {
+        elements.btnSubmitVote.disabled = true;
+        elements.btnVoteText.textContent = "Ingesting...";
+        elements.voteSpinner.style.display = "inline-block";
+      } else {
+        elements.btnSubmitVote.disabled = !state.selectedOptionId;
+        elements.btnVoteText.textContent = "Submit Vote";
+        elements.voteSpinner.style.display = "none";
+      }
     }
   }
 

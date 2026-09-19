@@ -61,57 +61,66 @@ class VoteWorker:
         start_time = time.perf_counter()
         batch_size = len(batch)
 
-        # Aggregate increments by option and by (poll_id, option_id)
-        option_increments: Dict[int, int] = defaultdict(int)
-        poll_option_increments: Dict[Tuple[int, int], int] = defaultdict(int)
-
-        for vote in batch:
-            opt_id = int(vote["option_id"])
-            p_id = int(vote["poll_id"])
-            option_increments[opt_id] += 1
-            poll_option_increments[(p_id, opt_id)] += 1
-
         try:
+            persisted_votes: List[Tuple[int, int]] = []
+
             with self.engine.begin() as conn:
-                # 1. Insert audit logs into votes table
+                # 1. Insert audit logs into votes table with ON CONFLICT DO NOTHING
                 insert_stmt = text(
                     """
                     INSERT INTO votes (poll_id, option_id, voter_hash, created_at)
                     VALUES (:poll_id, :option_id, :voter_hash, :created_at)
+                    ON CONFLICT (poll_id, voter_hash) DO NOTHING
+                    RETURNING poll_id, option_id
                     """
                 )
-                conn.execute(
-                    insert_stmt,
-                    [
+
+                for vote in batch:
+                    row = conn.execute(
+                        insert_stmt,
                         {
                             "poll_id": vote["poll_id"],
                             "option_id": vote["option_id"],
                             "voter_hash": vote["voter_hash"],
                             "created_at": vote.get("created_at"),
-                        }
-                        for vote in batch
-                    ],
-                )
+                        },
+                    ).fetchone()
+                    if row:
+                        persisted_votes.append((row[0], row[1]))
+
+                # Aggregate increments exclusively for successfully persisted votes
+                option_increments: Dict[int, int] = defaultdict(int)
+                poll_option_increments: Dict[Tuple[int, int], int] = defaultdict(int)
+
+                for p_id, opt_id in persisted_votes:
+                    option_increments[opt_id] += 1
+                    poll_option_increments[(p_id, opt_id)] += 1
 
                 # 2. Update aggregated option vote counts
-                update_stmt = text(
-                    """
-                    UPDATE poll_options
-                    SET vote_count = vote_count + :inc
-                    WHERE id = :opt_id
-                    """
-                )
-                for opt_id, count in option_increments.items():
-                    conn.execute(update_stmt, {"inc": count, "opt_id": opt_id})
+                if option_increments:
+                    update_stmt = text(
+                        """
+                        UPDATE poll_options
+                        SET vote_count = vote_count + :inc
+                        WHERE id = :opt_id
+                        """
+                    )
+                    for opt_id, count in option_increments.items():
+                        conn.execute(update_stmt, {"inc": count, "opt_id": opt_id})
 
             # 3. Synchronize Redis tallies: decrement offsets to balance real-time cache
-            pipe = self.redis_client.pipeline()
-            for (p_id, opt_id), count in poll_option_increments.items():
-                pipe.hincrby(f"quorum:poll:{p_id}:tallies", str(opt_id), -count)
-            pipe.execute()
+            if poll_option_increments:
+                pipe = self.redis_client.pipeline()
+                for (p_id, opt_id), count in poll_option_increments.items():
+                    pipe.hincrby(f"quorum:poll:{p_id}:tallies", str(opt_id), -count)
+                pipe.execute()
 
             duration_ms = (time.perf_counter() - start_time) * 1000
-            logger.info(f"Flushed {batch_size} votes to PostgreSQL in {duration_ms:.2f}ms")
+            persisted_count = len(persisted_votes)
+            logger.info(
+                f"Flushed {persisted_count}/{batch_size} votes to PostgreSQL in {duration_ms:.2f}ms "
+                f"({batch_size - persisted_count} duplicates skipped)"
+            )
             return True
 
         except SQLAlchemyError as exc:

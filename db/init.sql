@@ -24,10 +24,11 @@ CREATE TABLE IF NOT EXISTS votes (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. Performance Indexes
+-- 2. Performance Indexes & Uniqueness Constraints
 CREATE INDEX IF NOT EXISTS idx_votes_poll_id ON votes(poll_id);
 CREATE INDEX IF NOT EXISTS idx_votes_created_at ON votes(created_at);
 CREATE INDEX IF NOT EXISTS idx_poll_options_poll_id ON poll_options(poll_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_votes_poll_voter ON votes(poll_id, voter_hash);
 
 -- 3. Idempotent Seed Data
 DO $$

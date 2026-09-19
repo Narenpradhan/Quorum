@@ -2,9 +2,9 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import redis
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.config import get_settings
 from backend.app.database import get_db, get_redis
-from backend.app.models import Poll, PollOption
+from backend.app.models import Poll, PollOption, Vote
 from backend.app.schemas import (
     HealthResponse,
     PollOptionResponse,
@@ -58,8 +58,83 @@ app.add_middleware(
 )
 
 
-def _build_poll_response(poll: Poll, redis_client: redis.Redis) -> PollResponse:
-    """Helper to merge database baseline vote counts with real-time Redis tally offsets."""
+def _check_voter_status(
+    poll_id: int,
+    voter_fingerprint: Optional[str],
+    redis_client: redis.Redis,
+    db: Session,
+) -> tuple[bool, Optional[int]]:
+    """Determine whether the voter has already cast a ballot on this poll."""
+    if not voter_fingerprint:
+        return False, None
+
+    # 1. Fast check in Redis set
+    voters_set_key = f"quorum:poll:{poll_id}:voters"
+    choices_key = f"quorum:poll:{poll_id}:voter_choices"
+
+    try:
+        if redis_client.sismember(voters_set_key, voter_fingerprint):
+            raw_choice = redis_client.hget(choices_key, voter_fingerprint)
+            chosen_opt = int(raw_choice) if raw_choice else None
+            return True, chosen_opt
+    except Exception as exc:
+        logger.warning(f"Error checking Redis voter set: {exc}")
+
+    # 2. Check PostgreSQL persistence store
+    existing_vote = (
+        db.query(Vote)
+        .filter(Vote.poll_id == poll_id, Vote.voter_hash == voter_fingerprint)
+        .first()
+    )
+    if existing_vote:
+        # Backfill Redis cache for instant subsequent lookups
+        try:
+            pipe = redis_client.pipeline()
+            pipe.sadd(voters_set_key, voter_fingerprint)
+            pipe.hset(choices_key, voter_fingerprint, str(existing_vote.option_id))
+            pipe.execute()
+        except Exception as exc:
+            logger.warning(f"Could not backfill Redis voter cache: {exc}")
+        return True, existing_vote.option_id
+
+    return False, None
+
+
+def _build_poll_response(
+    poll: Poll,
+    redis_client: redis.Redis,
+    db: Session,
+    voter_fingerprint: Optional[str] = None,
+) -> PollResponse:
+    """Build poll response, concealing voting statistics until the voter has cast a ballot."""
+    has_voted, user_voted_option_id = _check_voter_status(
+        poll.id, voter_fingerprint, redis_client, db
+    )
+
+    # If the user has NOT voted, return options with counts and percentages hidden
+    if not has_voted:
+        hidden_options = [
+            PollOptionResponse(
+                id=opt.id,
+                poll_id=opt.poll_id,
+                label=opt.label,
+                vote_count=None,
+                percentage=None,
+            )
+            for opt in poll.options
+        ]
+        return PollResponse(
+            id=poll.id,
+            title=poll.title,
+            description=poll.description,
+            created_at=poll.created_at,
+            options=hidden_options,
+            has_voted=False,
+            user_voted_option_id=None,
+            total_votes=None,
+        )
+
+    # If the user HAS voted, reveal live statistics merged with Redis tally offsets
     tally_key = f"quorum:poll:{poll.id}:tallies"
     try:
         redis_tallies = redis_client.hgetall(tally_key)
@@ -102,6 +177,8 @@ def _build_poll_response(poll: Poll, redis_client: redis.Redis) -> PollResponse:
         description=poll.description,
         created_at=poll.created_at,
         options=options_data,
+        has_voted=True,
+        user_voted_option_id=user_voted_option_id,
         total_votes=total_votes,
     )
 
@@ -163,28 +240,34 @@ def readyz(
 
 @app.get("/api/polls", response_model=List[PollResponse], tags=["Polls"])
 def list_polls(
+    voter_fingerprint: Optional[str] = Query(
+        None, description="Optional client UID to check vote status and reveal stats"
+    ),
     db: Session = Depends(get_db),
     r: redis.Redis = Depends(get_redis),
 ) -> List[PollResponse]:
-    """Retrieve all polls with options merged with real-time Redis tally offsets."""
+    """Retrieve all polls, concealing statistics unless the voter has cast a ballot."""
     polls = db.query(Poll).order_by(Poll.id.asc()).all()
-    return [_build_poll_response(poll, r) for poll in polls]
+    return [_build_poll_response(poll, r, db, voter_fingerprint) for poll in polls]
 
 
 @app.get("/api/polls/{poll_id}", response_model=PollResponse, tags=["Polls"])
 def get_poll(
     poll_id: int,
+    voter_fingerprint: Optional[str] = Query(
+        None, description="Optional client UID to check vote status and reveal stats"
+    ),
     db: Session = Depends(get_db),
     r: redis.Redis = Depends(get_redis),
 ) -> PollResponse:
-    """Retrieve an individual poll with its options and real-time tally breakdowns."""
+    """Retrieve an individual poll, revealing statistics only if the voter has voted."""
     poll = db.query(Poll).filter(Poll.id == poll_id).first()
     if not poll:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Poll with ID {poll_id} not found",
         )
-    return _build_poll_response(poll, r)
+    return _build_poll_response(poll, r, db, voter_fingerprint)
 
 
 @app.post(
@@ -199,8 +282,8 @@ def submit_vote(
     db: Session = Depends(get_db),
     r: redis.Redis = Depends(get_redis),
 ) -> VoteResponse:
-    """Accept and queue an incoming vote event, atomically updating the Redis tally."""
-    # Validate option belongs to target poll
+    """Accept and queue an incoming vote event, strictly enforcing one vote per UID."""
+    # 1. Validate option belongs to target poll
     option = (
         db.query(PollOption)
         .filter(PollOption.id == vote_data.option_id, PollOption.poll_id == poll_id)
@@ -210,6 +293,14 @@ def submit_vote(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Option {vote_data.option_id} does not belong to poll {poll_id}",
+        )
+
+    # 2. Enforce one vote per UID: check if voter has already voted
+    has_voted, _ = _check_voter_status(poll_id, vote_data.voter_fingerprint, r, db)
+    if has_voted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You have already cast a vote on this poll. Changing votes is not permitted.",
         )
 
     event_payload = json.dumps(
@@ -222,10 +313,14 @@ def submit_vote(
     )
 
     tally_key = f"quorum:poll:{poll_id}:tallies"
+    voters_set_key = f"quorum:poll:{poll_id}:voters"
+    choices_key = f"quorum:poll:{poll_id}:voter_choices"
 
     try:
-        # Atomic pipeline: increment real-time tally offset and push event to stream queue
+        # Atomic pipeline: mark voter as voted, store choice, increment tally, and queue event
         pipe = r.pipeline()
+        pipe.sadd(voters_set_key, vote_data.voter_fingerprint)
+        pipe.hset(choices_key, vote_data.voter_fingerprint, str(vote_data.option_id))
         pipe.hincrby(tally_key, str(vote_data.option_id), 1)
         pipe.rpush(settings.REDIS_QUEUE_KEY, event_payload)
         pipe.execute()

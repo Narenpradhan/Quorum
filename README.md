@@ -289,6 +289,63 @@ curl -i -X POST http://localhost:8000/api/polls/1/vote \
 }
 ```
 
+## Load Testing & Performance Benchmarking
+
+Quorum includes an automated, configurable load testing suite in `scripts/load_test.py` that simulates concurrent virtual users randomly choosing polls and casting votes to evaluate real-time Redis buffering and asynchronous PostgreSQL batch persistence:
+
+### Quick Start
+
+```bash
+# 1. View all available CLI arguments and options
+python3 scripts/load_test.py --help
+
+# 2. Run standard benchmark (500 requests, concurrency 25, 100 virtual users)
+python3 scripts/load_test.py
+
+# 3. High-throughput stress test with 1,000 requests at concurrency 50
+python3 scripts/load_test.py -n 1000 -c 50 -u 200
+
+# 4. Verbose request-by-request output against Nginx (or backend directly: --base-url http://localhost:8000)
+python3 scripts/load_test.py -n 100 -c 10 -v
+```
+
+> [!TIP]
+> The script supports `httpx` for high-throughput `asyncio` networking (`pip install -r scripts/requirements.txt`), while also offering an automatic zero-dependency fallback using Python's standard library `ThreadPoolExecutor` and `urllib`.
+
+### CLI Arguments Reference
+
+| Argument | Shorthand | Type | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `--requests` | `-n` | `int` | `500` | Total number of vote requests to execute |
+| `--concurrency` | `-c` | `int` | `25` | Number of simultaneous concurrent connections |
+| `--users` | `-u` | `int` | `100` | Number of simulated virtual users with unique client identities |
+| `--base-url` | | `str` | `http://localhost:8080` | Target URL (Nginx reverse proxy or direct API at `:8000`) |
+| `--verbose` | `-v` | `flag` | `False` | Stream live request status, HTTP code, and latency in ms |
+| `--help` | `-h` | `flag` | | Display help manual and usage examples |
+
+### Sample Benchmark Output
+
+```text
+============================================================
+               QUORUM LOAD TEST SUMMARY
+============================================================
+Total Requests Processed : 500
+Total Time Taken         : 0.38 seconds
+Throughput Rate          : 1315.79 requests/sec
+Status Code Breakdown    : {202: 500}
+Successful Requests      : 500 (100.0%)
+Failed Requests          : 0 (0.0%)
+------------------------------------------------------------
+Latency Breakdown:
+  Min Latency            : 2.15 ms
+  Average Latency        : 14.82 ms
+  Median (P50)           : 12.30 ms
+  95th Percentile (P95)  : 28.45 ms
+  99th Percentile (P99)  : 42.10 ms
+  Max Latency            : 65.30 ms
+============================================================
+```
+
 ---
 
 ## Production Containerization & Kubernetes Readiness

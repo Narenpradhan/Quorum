@@ -64,4 +64,62 @@ BEGIN
             (poll2_id, '4 Spaces', 0),
             (poll2_id, 'Tabs', 0);
     END IF;
+
+    -- Seed Poll 3: Primary Programming Language for Distributed Systems
+    DECLARE
+        poll3_id INT;
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM polls WHERE title = 'Primary Programming Language for Distributed Systems?') THEN
+            INSERT INTO polls (title, description)
+            VALUES (
+                'Primary Programming Language for Distributed Systems?',
+                'Which language powers your distributed services, data pipelines, and microservice backends?'
+            ) RETURNING id INTO poll3_id;
+
+            INSERT INTO poll_options (poll_id, label, vote_count) VALUES
+                (poll3_id, 'Go', 0),
+                (poll3_id, 'Rust', 0),
+                (poll3_id, 'Python', 0),
+                (poll3_id, 'Java / Kotlin', 0);
+        END IF;
+    END;
+
+    -- Seed Poll 4: Preferred Cloud Provider for Production
+    DECLARE
+        poll4_id INT;
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM polls WHERE title = 'Preferred Cloud Provider for Production Workloads?') THEN
+            INSERT INTO polls (title, description)
+            VALUES (
+                'Preferred Cloud Provider for Production Workloads?',
+                'Where do your core mission-critical production workloads live and scale?'
+            ) RETURNING id INTO poll4_id;
+
+            INSERT INTO poll_options (poll_id, label, vote_count) VALUES
+                (poll4_id, 'AWS (Amazon Web Services)', 0),
+                (poll4_id, 'Google Cloud Platform (GCP)', 0),
+                (poll4_id, 'Microsoft Azure', 0),
+                (poll4_id, 'Bare Metal / Self-Hosted', 0);
+        END IF;
+    END;
+
+    -- Seed Poll 5: Editor / IDE Preference
+    DECLARE
+        poll5_id INT;
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM polls WHERE title = 'Everyday Primary Code Editor or IDE?') THEN
+            INSERT INTO polls (title, description)
+            VALUES (
+                'Everyday Primary Code Editor or IDE?',
+                'Which development environment do you spend 90% of your coding hours inside?'
+            ) RETURNING id INTO poll5_id;
+
+            INSERT INTO poll_options (poll_id, label, vote_count) VALUES
+                (poll5_id, 'Neovim / Vim', 0),
+                (poll5_id, 'VS Code / Cursor', 0),
+                (poll5_id, 'JetBrains Suite', 0),
+                (poll5_id, 'Emacs', 0);
+        END IF;
+    END;
 END $$;
+

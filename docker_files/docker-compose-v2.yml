@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quorum-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quorum
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - quorum_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quorum"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: quorum-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - quorum_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: pradhanaren/quorum:backend-distroless
+    container_name: quorum-backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/quorum
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_QUEUE_KEY=quorum:vote_stream
+      - LOG_LEVEL=INFO
+      - CORS_ORIGINS=*
+    ports:
+      - "8000:8000"
+    networks:
+      - quorum_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: pradhanaren/quorum:worker-distroless
+    container_name: quorum-worker
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/quorum
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_QUEUE_KEY=quorum:vote_stream
+      - BATCH_SIZE=50
+      - FLUSH_INTERVAL_SECONDS=2.0
+      - LOG_LEVEL=INFO
+    networks:
+      - quorum_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    image: pradhanaren/quorum:frontend-standard
+    container_name: quorum-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    networks:
+      - quorum_network
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  quorum_network:
+    driver: bridge

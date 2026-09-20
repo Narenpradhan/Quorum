@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quorum-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quorum
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quorum"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: quorum-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: python:3.12-slim
+    container_name: quorum-backend
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/quorum
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_QUEUE_KEY=quorum:vote_stream
+      - LOG_LEVEL=INFO
+      - CORS_ORIGINS=*
+    command: >
+      sh -c "pip install --no-cache-dir -r backend/requirements.txt &&
+             uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: python:3.12-slim
+    container_name: quorum-worker
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/quorum
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_QUEUE_KEY=quorum:vote_stream
+      - BATCH_SIZE=50
+      - FLUSH_INTERVAL_SECONDS=2.0
+      - LOG_LEVEL=INFO
+    command: >
+      sh -c "pip install --no-cache-dir -r worker/requirements.txt &&
+             python3 -m worker.app.worker"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    image: nginx:alpine
+    container_name: quorum-frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend/src:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

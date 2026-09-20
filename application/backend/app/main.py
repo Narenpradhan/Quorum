@@ -11,10 +11,10 @@ import redis
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from backend.app.config import get_settings
-from backend.app.database import get_db, get_redis
-from backend.app.models import Poll, PollOption, Vote
-from backend.app.schemas import (
+from app.config import get_settings
+from app.database import get_db, get_redis
+from app.models import Poll, PollOption, Vote
+from app.schemas import (
     HealthResponse,
     PollOptionResponse,
     PollResponse,

@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from worker.app.config import get_worker_settings
+from app.config import get_worker_settings
 
 settings = get_worker_settings()
 

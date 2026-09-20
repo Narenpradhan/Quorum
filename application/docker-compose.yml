@@ -12,6 +12,8 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    networks:
+      - quorum_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d quorum"]
       interval: 5s
@@ -24,6 +26,8 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
+    networks:
+      - quorum_network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -31,12 +35,9 @@ services:
       retries: 5
 
   backend:
-    image: python:3.12-slim
+    image: pradhanaren/quorum:backend-distroless
     container_name: quorum-backend
     restart: unless-stopped
-    working_dir: /app
-    volumes:
-      - .:/app
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/quorum
       - REDIS_HOST=redis
@@ -44,11 +45,10 @@ services:
       - REDIS_QUEUE_KEY=quorum:vote_stream
       - LOG_LEVEL=INFO
       - CORS_ORIGINS=*
-    command: >
-      sh -c "pip install --no-cache-dir -r backend/requirements.txt &&
-             uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+    networks:
+      - quorum_network
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,12 +56,9 @@ services:
         condition: service_healthy
 
   worker:
-    image: python:3.12-slim
+    image: pradhanaren/quorum:worker-distroless
     container_name: quorum-worker
     restart: unless-stopped
-    working_dir: /app
-    volumes:
-      - .:/app
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/quorum
       - REDIS_HOST=redis
@@ -70,9 +67,8 @@ services:
       - BATCH_SIZE=50
       - FLUSH_INTERVAL_SECONDS=2.0
       - LOG_LEVEL=INFO
-    command: >
-      sh -c "pip install --no-cache-dir -r worker/requirements.txt &&
-             python3 -m worker.app.worker"
+    networks:
+      - quorum_network
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,16 +76,20 @@ services:
         condition: service_healthy
 
   frontend:
-    image: nginx:alpine
+    image: pradhanaren/quorum:frontend-standard
     container_name: quorum-frontend
     restart: unless-stopped
-    volumes:
-      - ./frontend/src:/usr/share/nginx/html:ro
-      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "8080:80"
+    networks:
+      - quorum_network
     depends_on:
       - backend
 
 volumes:
   pgdata:
+    driver: local
+
+networks:
+  quorum_network:
+    driver: bridge

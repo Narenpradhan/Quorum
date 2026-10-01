@@ -1,0 +1,53 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: quorum-ingress
+  annotations:
+    # Optional: adjust client body size for file uploads if needed
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  # Identifies which Ingress controller should pick up these rules
+  ingressClassName: nginx
+  rules:
+  # Optional: You can specify a domain name (e.g. host: quorum.local).
+  # If you omit 'host', it will match all incoming hostnames and IP addresses!
+  - host: quorum.local.com
+    http:
+      paths:
+      # 1. Route API requests to the FastAPI backend
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-svc
+            port:
+              number: 8000
+
+      # 2. Route cluster readiness check to the backend
+      - path: /readyz
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-svc
+            port:
+              number: 8000
+
+      # 3. Route liveness probe to the backend
+      - path: /healthz
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-svc
+            port:
+              number: 8000
+
+      # 4. Fallback: Route everything else to the Frontend (HTML/JS/CSS)
+      # Ingress evaluates from most specific to least specific.
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-svc
+            port:
+              number: 80

@@ -35,7 +35,7 @@ venv.bak/
 .env.*.local
 *.pem
 *.key
-kubernetes_manifests/secrets/db.env
+k8s_manifests/secrets/db.env
 
 # Logs & Databases
 *.log

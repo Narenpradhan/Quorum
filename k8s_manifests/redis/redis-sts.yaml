@@ -51,7 +51,25 @@ spec:
         volumeMounts:
         - name: redis-data
           mountPath: /data
-      volumes:
-      - name: redis-data
-        persistentVolumeClaim:
-          claimName: redis-pvc
+# Mounting this PVC for dynamic provisioning won't work since there are two separate levels of 
+# PV Provisioning (Storage layer) and PVC Provisioning (StatefulSet pod layer).
+# Even if in the storage layer that is use of storageClass for dynamic PV creation,
+# it does not make it dynamic for StatefulSet pods.  
+# For single pod, it works completely fine. The single pod redis-sts-0 will mount redis-pvc.
+# If you scale to replicas: 2: Pod redis-sts-1 will attempt to attach to the same redis-pvc.
+# Because accessModes is ReadWriteOnce (RWO), redis-sts-1 will get stuck with a 
+# Multi-Attach error for volume ... Volume is already used by pod(s) error.
+      # volumes:
+      # - name: redis-data
+      #   persistentVolumeClaim:
+      #     claimName: redis-pvc
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 2Gi

@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sts
+  labels:
+    app: redis
+spec:
+  serviceName: "redis-svc"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: quorum-redis
+        image: redis:7-alpine
+        imagePullPolicy: IfNotPresent
+        command: ["redis-server", "--appendonly", "yes"]
+        ports:
+        - name: redis
+          containerPort: 6379
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "128m"
+          limits:
+            memory: "128Mi"
+            cpu: "256m"
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+# Mounting this PVC for dynamic provisioning won't work since there are two separate levels of 
+# PV Provisioning (Storage layer) and PVC Provisioning (StatefulSet pod layer).
+# Even if in the storage layer that is use of storageClass for dynamic PV creation,
+# it does not make it dynamic for StatefulSet pods.  
+# For single pod, it works completely fine. The single pod redis-sts-0 will mount redis-pvc.
+# If you scale to replicas: 2: Pod redis-sts-1 will attempt to attach to the same redis-pvc.
+# Because accessModes is ReadWriteOnce (RWO), redis-sts-1 will get stuck with a 
+# Multi-Attach error for volume ... Volume is already used by pod(s) error.
+      # volumes:
+      # - name: redis-data
+      #   persistentVolumeClaim:
+      #     claimName: redis-pvc
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 2Gi

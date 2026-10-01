@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - backend/backend_depl.yaml
+  - backend/backend_svc.yaml
+  - frontend/frontend_depl.yaml
+  - frontend/frontend_svc.yaml
+  - worker/worker_depl.yaml
+  - postgres/postgres-sts.yaml
+  - postgres/postgres-svc.yaml
+  - postgres/postgres-pvc.yaml
+  - redis/redis-sts.yaml
+  - redis/redis-svc.yaml
+  - redis/redis-pvc.yaml
+  - ingress/ingress.yaml
+
+configMapGenerator:
+  - name: postgres-init-cm
+    files:
+      - configs/01-init.sql
+  - name: frontend-nginx-config
+    files:
+      - configs/default.conf
+  - name: backend-cm
+    envs:
+      - configs/backend.env
+
+secretGenerator:
+  - name: db-creds
+    envs:
+      - configs/db.env
+
+generatorOptions:
+  disableNameSuffixHash: true

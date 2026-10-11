@@ -344,29 +344,29 @@ python3 scripts/progressive_load_test.py
                  STARTING LOAD TEST
 ============================================================
 Target URL            : http://quorum.local.com
-Total Requests        : 3000
-Concurrency Level     : 200
-Simulated Users       : 400
+Total Requests        : 2000
+Concurrency Level     : 100
+Simulated Users       : 300
 Engine                : standard library (ThreadPoolExecutor)
 ------------------------------------------------------------
 
 ============================================================
                QUORUM LOAD TEST SUMMARY
 ============================================================
-Total Requests Processed : 3000
-Total Time Taken         : 54.56 seconds
-Throughput Rate          : 54.99 requests/sec
-Status Code Breakdown    : {0: 568, 202: 2432}
-Successful Requests      : 2432 (81.1%)
-Failed Requests          : 568 (18.9%)
+Total Requests Processed : 2000
+Total Time Taken         : 15.77 seconds
+Throughput Rate          : 126.80 requests/sec
+Status Code Breakdown    : {202: 2000}
+Successful Requests      : 2000 (100.0%)
+Failed Requests          : 0 (0.0%)
 ------------------------------------------------------------
 Latency Breakdown:
-  Min Latency            : 2.56 ms
-  Average Latency        : 3407.04 ms
-  Median (P50)           : 791.83 ms
-  95th Percentile (P95)  : 15016.42 ms
-  99th Percentile (P99)  : 15019.37 ms
-  Max Latency            : 15026.75 ms
+  Min Latency            : 3.47 ms
+  Average Latency        : 732.90 ms
+  Median (P50)           : 536.03 ms
+  95th Percentile (P95)  : 1897.89 ms
+  99th Percentile (P99)  : 4718.98 ms
+  Max Latency            : 5990.23 ms
 ============================================================
 ```
 
